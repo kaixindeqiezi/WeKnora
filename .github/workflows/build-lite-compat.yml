@@ -33,13 +33,15 @@ jobs:
           path: frontend/dist/
           retention-days: 3
 
-  # Build the Go binary inside a Debian 11 (bullseye) container.
+  # Build inside AlmaLinux 8 with gcc-toolset-12.
   #
-  # Why bullseye: the target host is Alibaba Cloud Linux 3 with glibc 2.32, so
-  # an ubuntu/debian 12 build (glibc 2.36) cannot start there. Bullseye ships
-  # glibc 2.31, which runs fine on 2.32, and its gcc 10 provides a
-  # libstdc++ new enough for the prebuilt duckdb-go-bindings archives (gcc 8
-  # on Rocky Linux 8 left __throw_bad_array_new_length undefined).
+  # Why AlmaLinux 8:
+  #   * its glibc is 2.28, well below the target host's 2.32, so the binary
+  #     runs there (an ubuntu/bookworm build would need glibc 2.36);
+  #   * gcc-toolset-12 provides the C++ ABI that the prebuilt
+  #     duckdb-go-bindings archive was compiled against
+  #     (std::__throw_bad_array_new_length / CXXABI_1.3.8), which
+  #     debian bullseye's gcc 10 and AlmaLinux's gcc 11 cannot resolve.
   build-binary:
     needs: build-frontend
     runs-on: ubuntu-latest
@@ -71,7 +73,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building ${VERSION} for linux/amd64"
 
-      - name: Build inside Debian 11 container (glibc 2.31 baseline)
+      - name: Build inside AlmaLinux 8 container (glibc 2.28 baseline)
         run: |
           set -euo pipefail
           docker run --rm \
@@ -79,23 +81,16 @@ jobs:
             -w /src \
             -e EDITION=lite \
             -e CGO_ENABLED=1 \
-            -e CGO_CFLAGS="-Wno-deprecated-declarations" \
-            debian:bullseye \
+            almalinux:8 \
             bash -euxo pipefail -c '
-              export DEBIAN_FRONTEND=noninteractive
-              # bullseye is EOL: deb.debian.org no longer serves it, so point apt
-              # at the archive copy that still hosts the .deb files.
-              sed -i -e "s|deb.debian.org/debian-security|archive.debian.org/debian-security|g" \
-                     -e "s|deb.debian.org/debian|archive.debian.org/debian|g" \
-                     -e "s|security.debian.org|archive.debian.org/debian-security|g" \
-                     /etc/apt/sources.list
-              echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
-              apt-get update -o Acquire::Check-Valid-Until=false
-              apt-get install -y --no-install-recommends \
-                ca-certificates curl git build-essential libsqlite3-dev pkg-config
-              # sqlite-vec needs SQLITE_INNOCUOUS (SQLite >= 3.31); bullseye
-              # ships 3.34, which already defines it, but the header must come
-              # from a modern SQLite to match the bundled sqlite-vec sources.
+              dnf install -y gcc-toolset-12 git tar gzip make curl which
+              source /opt/rh/gcc-toolset-12/enable
+              export PATH=/opt/rh/gcc-toolset-12/root/usr/bin:$PATH
+              gcc --version | head -1
+              g++ --version | head -1
+              ldd --version | head -1
+              # sqlite-vec needs SQLITE_INNOCUOUS (SQLite >= 3.31), so build a
+              # modern SQLite and point the compiler at it.
               curl -fsSL https://www.sqlite.org/2024/sqlite-autoconf-3450200.tar.gz -o /tmp/sqlite.tgz
               tar -C /tmp -xzf /tmp/sqlite.tgz
               cd /tmp/sqlite-autoconf-3450200
@@ -113,8 +108,7 @@ jobs:
               export GOMODCACHE=/tmp/gomodcache
               # go.mod replaces anydoc with a local path, so the module graph
               # needs VCS status to resolve. The checkout carries full
-              # history, so the repo is already usable; the fallback below
-              # only covers a .git-less mount.
+              # history; the fallback only covers a .git-less mount.
               if [ ! -d .git ]; then
                 git init -q .
                 git config user.email build@local
