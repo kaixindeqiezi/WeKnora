@@ -106,9 +106,23 @@ jobs:
               export GOPATH=/tmp/gopath
               export GOCACHE=/tmp/gocache
               export GOMODCACHE=/tmp/gomodcache
+              # go.mod replaces anydoc with a local path, so the module graph
+              # needs a git repo to resolve its version. The workspace mount
+              # has no .git directory, so a throwaway one is created.
+              if [ ! -d .git ]; then
+                git init -q .
+                git config user.email build@local
+                git config user.name build
+                git add -A >/dev/null 2>&1 || true
+                git commit -q -m build --allow-empty >/dev/null 2>&1 || true
+              fi
               export CGO_CFLAGS="-Wno-deprecated-declarations -I/usr/local/include"
               export CGO_LDFLAGS="-L/usr/local/lib"
               export LD_LIBRARY_PATH=/usr/local/lib
+              export GOFLAGS=-mod=mod
+              export GOSUMDB=off
+              export GOPRIVATE=*
+              export GONOSUMCHECK=1
               go version
               eval "$(./scripts/get_version.sh env)"
               LDFLAGS="-w -s $(./scripts/get_version.sh ldflags)"
