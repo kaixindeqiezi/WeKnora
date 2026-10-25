@@ -33,10 +33,13 @@ jobs:
           path: frontend/dist/
           retention-days: 3
 
-  # Build the Go binary inside a Rocky Linux 8 container so the produced
-  # executable links against glibc 2.28, which runs on the target host's
-  # glibc 2.32 (Alibaba Cloud Linux 3). Official ubuntu-based artifacts
-  # require glibc 2.35+ and cannot start there.
+  # Build the Go binary inside a Debian 11 (bullseye) container.
+  #
+  # Why bullseye: the target host is Alibaba Cloud Linux 3 with glibc 2.32, so
+  # an ubuntu/debian 12 build (glibc 2.36) cannot start there. Bullseye ships
+  # glibc 2.31, which runs fine on 2.32, and its gcc 10 provides a
+  # libstdc++ new enough for the prebuilt duckdb-go-bindings archives (gcc 8
+  # on Rocky Linux 8 left __throw_bad_array_new_length undefined).
   build-binary:
     needs: build-frontend
     runs-on: ubuntu-latest
@@ -63,22 +66,24 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building ${VERSION} for linux/amd64"
 
-      - name: Build inside Rocky Linux 8 container (glibc 2.28 baseline)
+      - name: Build inside Debian 11 container (glibc 2.31 baseline)
         run: |
           set -euo pipefail
           docker run --rm \
-            -v "$PWD:/src" \
             -v "${GITHUB_WORKSPACE}:/src" \
             -w /src \
             -e EDITION=lite \
             -e CGO_ENABLED=1 \
             -e CGO_CFLAGS="-Wno-deprecated-declarations" \
-            rockylinux:8 \
+            debian:bullseye \
             bash -euxo pipefail -c '
-              dnf install -y gcc gcc-c++ make tar gzip
-              # Rocky8 ships SQLite 3.26, but sqlite-vec needs SQLITE_INNOCUOUS
-              # which landed in SQLite 3.31. Build a newer SQLite into /usr/local
-              # so its headers and library win over the distro ones.
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                ca-certificates curl git build-essential libsqlite3-dev pkg-config
+              # sqlite-vec needs SQLITE_INNOCUOUS (SQLite >= 3.31); bullseye
+              # ships 3.34, which already defines it, but the header must come
+              # from a modern SQLite to match the bundled sqlite-vec sources.
               curl -fsSL https://www.sqlite.org/2024/sqlite-autoconf-3450200.tar.gz -o /tmp/sqlite.tgz
               tar -C /tmp -xzf /tmp/sqlite.tgz
               cd /tmp/sqlite-autoconf-3450200
@@ -87,7 +92,6 @@ jobs:
               make install
               ldconfig
               cd /src
-              sqlite3 --version || true
               curl -fsSL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz -o /tmp/go.tgz
               rm -rf /usr/local/go
               tar -C /usr/local -xzf /tmp/go.tgz
