@@ -75,7 +75,19 @@ jobs:
             -e CGO_CFLAGS="-Wno-deprecated-declarations" \
             rockylinux:8 \
             bash -euxo pipefail -c '
-              dnf install -y gcc gcc-c++ make tar gzip sqlite-devel
+              dnf install -y gcc gcc-c++ make tar gzip
+              # Rocky8 ships SQLite 3.26, but sqlite-vec needs SQLITE_INNOCUOUS
+              # which landed in SQLite 3.31. Build a newer SQLite into /usr/local
+              # so its headers and library win over the distro ones.
+              curl -fsSL https://www.sqlite.org/2024/sqlite-autoconf-3450200.tar.gz -o /tmp/sqlite.tgz
+              tar -C /tmp -xzf /tmp/sqlite.tgz
+              cd /tmp/sqlite-autoconf-3450200
+              ./configure --prefix=/usr/local
+              make -j2
+              make install
+              ldconfig
+              cd /src
+              sqlite3 --version || true
               curl -fsSL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz -o /tmp/go.tgz
               rm -rf /usr/local/go
               tar -C /usr/local -xzf /tmp/go.tgz
@@ -83,9 +95,12 @@ jobs:
               export GOPATH=/tmp/gopath
               export GOCACHE=/tmp/gocache
               export GOMODCACHE=/tmp/gomodcache
+              export CGO_CFLAGS="-Wno-deprecated-declarations -I/usr/local/include"
+              export CGO_LDFLAGS="-L/usr/local/lib"
+              export LD_LIBRARY_PATH=/usr/local/lib
               go version
               eval "$(./scripts/get_version.sh env)"
-              LDFLAGS="-w -s $(./scripts/get_version.sh ldflags)"
+              LDFLAGS="-w -s $(./scripts/get_version.sh ldflags) -L/usr/local/lib"
               go build -tags "sqlite_fts5" -ldflags="${LDFLAGS}" -o WeKnora-lite ./cmd/server
               ldd ./WeKnora-lite || true
             '
