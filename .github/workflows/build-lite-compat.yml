@@ -78,7 +78,14 @@ jobs:
             debian:bullseye \
             bash -euxo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
-              apt-get update
+              # bullseye is EOL: deb.debian.org no longer serves it, so point apt
+              # at the archive copy that still hosts the .deb files.
+              sed -i -e "s|deb.debian.org/debian-security|archive.debian.org/debian-security|g" \
+                     -e "s|deb.debian.org/debian|archive.debian.org/debian|g" \
+                     -e "s|security.debian.org|archive.debian.org/debian-security|g" \
+                     /etc/apt/sources.list
+              echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
+              apt-get update -o Acquire::Check-Valid-Until=false
               apt-get install -y --no-install-recommends \
                 ca-certificates curl git build-essential libsqlite3-dev pkg-config
               # sqlite-vec needs SQLITE_INNOCUOUS (SQLite >= 3.31); bullseye
