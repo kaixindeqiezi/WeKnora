@@ -100,7 +100,7 @@ jobs:
               export LD_LIBRARY_PATH=/usr/local/lib
               go version
               eval "$(./scripts/get_version.sh env)"
-              LDFLAGS="-w -s $(./scripts/get_version.sh ldflags) -L/usr/local/lib"
+              LDFLAGS="-w -s $(./scripts/get_version.sh ldflags)"
               go build -tags "sqlite_fts5" -ldflags="${LDFLAGS}" -o WeKnora-lite ./cmd/server
               ldd ./WeKnora-lite || true
             '
