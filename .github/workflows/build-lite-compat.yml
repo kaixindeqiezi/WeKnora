@@ -1,0 +1,118 @@
+name: Build Lite (glibc 2.32 compatible)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag for packaging"
+        required: false
+        default: "v0.8.3"
+
+permissions:
+  contents: read
+
+jobs:
+  # Frontend is platform independent; build once and share as artifact.
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 3
+
+  # Build the Go binary inside a Rocky Linux 8 container so the produced
+  # executable links against glibc 2.28, which runs on the target host's
+  # glibc 2.32 (Alibaba Cloud Linux 3). Official ubuntu-based artifacts
+  # require glibc 2.35+ and cannot start there.
+  build-binary:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    env:
+      GO_VERSION: "1.26"
+      EDITION: lite
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: web/
+
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION="${{ inputs.tag }}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building ${VERSION} for linux/amd64"
+
+      - name: Build inside Rocky Linux 8 container (glibc 2.28 baseline)
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD:/src" \
+            -v "${GITHUB_WORKSPACE}:/src" \
+            -w /src \
+            -e EDITION=lite \
+            -e CGO_ENABLED=1 \
+            -e CGO_CFLAGS="-Wno-deprecated-declarations" \
+            rockylinux:8 \
+            bash -euxo pipefail -c '
+              dnf install -y gcc make git tar gzip coreutils findutils
+              curl -fsSL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz -o /tmp/go.tgz
+              rm -rf /usr/local/go
+              tar -C /usr/local -xzf /tmp/go.tgz
+              export PATH=/usr/local/go/bin:$PATH
+              export GOPATH=/tmp/gopath
+              export GOCACHE=/tmp/gocache
+              export GOMODCACHE=/tmp/gomodcache
+              go version
+              eval "$(./scripts/get_version.sh env)"
+              LDFLAGS="-w -s $(./scripts/get_version.sh ldflags)"
+              go build -tags "sqlite_fts5" -ldflags="${LDFLAGS}" -o WeKnora-lite ./cmd/server
+              ldd ./WeKnora-lite || true
+            '
+
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          ARCHIVE="WeKnora-lite_${{ steps.ver.outputs.version }}_linux_amd64"
+          mkdir -p "${ARCHIVE}/web"
+          cp WeKnora-lite "${ARCHIVE}/"
+          bash ./scripts/copy-licenses.sh "${ARCHIVE}" || true
+          cp -r web/* "${ARCHIVE}/web/"
+          cp .env.lite.example "${ARCHIVE}/"
+          cp docs/LITE.md "${ARCHIVE}/README.md"
+          if [ -d config ]; then cp -r config "${ARCHIVE}/config"; fi
+          if [ -d migrations/sqlite ]; then
+            mkdir -p "${ARCHIVE}/migrations/sqlite"
+            cp -r migrations/sqlite/* "${ARCHIVE}/migrations/sqlite/"
+          fi
+          tar czf "${ARCHIVE}.tar.gz" "${ARCHIVE}"
+          sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
+          cat "${ARCHIVE}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weknora-lite-linux-amd64
+          path: |
+            WeKnora-lite_*.tar.gz
+            WeKnora-lite_*.tar.gz.sha256
+          retention-days: 30
